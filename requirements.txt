@@ -5,7 +5,7 @@ websocket
 groq
 supabase
 python-dotenv
-pip install python-multipart
+python-multipart
 redis==6.4.0
 pydub
 uvicorn==0.37.0
