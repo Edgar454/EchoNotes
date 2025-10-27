@@ -7,7 +7,7 @@ from api.routes.websocket import manager
 
 load_dotenv()
 
-REDIS_URL = os.getenv("REDIS_HOST")
+REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
