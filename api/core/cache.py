@@ -13,13 +13,18 @@ logging.basicConfig(level=logging.INFO)
 # INIT / CONNECTION
 # -----------------------
 
-async def init_redis(redis_url: str|None)-> Redis:
+async def init_redis(redis_host: str|None , redis_password:str)-> Redis:
     """Initialize async Redis client (call this once on app startup)."""
     if not redis_url:
         logging.error("Missing Redis configuration: REDIS_URL not found.")
         raise ValueError("Missing Redis configuration.")
     
-    redis_client = Redis.from_url(redis_url)
+    redis_client = Redis(
+                  host= redis_host,
+                  port=6379,
+                  password=redis_password,
+                  ssl=True
+                )
 
     # test the connection
     try:

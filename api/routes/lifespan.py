@@ -7,7 +7,8 @@ from api.routes.websocket import manager
 
 load_dotenv()
 
-REDIS_URL = os.getenv("REDIS_URL")
+REDIS_URL = os.getenv("REDIS_HOST")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -17,7 +18,7 @@ async def lifespan(app):
         # Startup code if needed
         print("App starting up...")
         app.state.supabase = await init_supabase(SUPABASE_URL , SUPABASE_KEY)
-        app.state.redis_client = await init_redis(REDIS_URL)
+        app.state.redis_client = await init_redis(REDIS_HOST ,REDIS_PASSWORD)
         yield
     finally:
         # Shutdown logic
