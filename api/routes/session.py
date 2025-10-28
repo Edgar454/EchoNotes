@@ -1,11 +1,12 @@
 import io
+import asyncio
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from datetime import datetime
 import json
 import logging
 from api.routes.auth_utils import get_current_user
-from api.core.cache import get_cached_transcripts
+from api.core.cache import get_cached_transcripts , get_session_keys
 from supabase import AsyncClient
 from redis.asyncio import Redis
 
@@ -57,7 +58,11 @@ async def get_transcript(
 # GET LAST TRANSCRIPTS
 # -----------------------
 @router.get("/get_last_transcripts")
-async def get_last_transcripts(request: Request,user= Depends(get_current_user), number_sessions: int = 10):
+async def get_last_transcripts(
+    request: Request,
+    user=Depends(get_current_user),
+    number_sessions: int = 10,
+):
     """
     Return the last N session summaries for the authenticated user.
     Each transcript is merged into one entry per session.
@@ -65,31 +70,41 @@ async def get_last_transcripts(request: Request,user= Depends(get_current_user),
     supabase: AsyncClient = request.app.state.supabase
     redis: Redis = request.app.state.redis_client
 
-    # Step 1: Fetch last N sessions from cache or Supabase
-    session_keys = await redis.keys(f"session:{user.id}:*")
+    # Step 1: Fetch last N sessions from Redis
+    pattern = f"session:{user.id}:*"
+    session_keys = await get_session_keys(redis, pattern)
+
     cached_sessions = []
     if session_keys:
-        for key in sorted(session_keys, reverse=True)[:number_sessions]:
-            data = await redis.get(key)
-            if data:
-                cached_sessions.append(json.loads(data))
+        session_keys = sorted(session_keys, reverse=True)[:number_sessions]
+        results = await asyncio.gather(*(redis.get(k) for k in session_keys))
+        cached_sessions = [
+            json.loads(d.decode() if isinstance(d, bytes) else d)
+            for d in results
+            if d
+        ]
 
-    # If we have enough cached sessions, return them
+    # Step 2: Fallback to Supabase if needed
     if len(cached_sessions) >= number_sessions:
         sessions_to_return = cached_sessions[:number_sessions]
     else:
-        # Fetch last N sessions from Supabase
-        resp = await supabase.table("sessions").select("*").eq("user_id", user.id)\
-                        .order("started_at", desc=True).limit(number_sessions).execute()
-        sessions_to_return = resp.data or []
+        cached_ids = {s["id"] for s in cached_sessions}
+        resp = await supabase.table("sessions").select("*").eq("user_id", user.id) \
+                    .order("started_at", desc=True).limit(number_sessions * 2).execute()
 
-    # Step 2: Fetch transcripts for these sessions
+        fresh_sessions = [s for s in (resp.data or []) if s["id"] not in cached_ids]
+        sessions_to_return = cached_sessions + fresh_sessions[:number_sessions - len(cached_sessions)]
+
+    if not sessions_to_return:
+        return []
+
+    # Step 3: Fetch transcripts for these sessions
     session_ids = [s["id"] for s in sessions_to_return]
-    transcripts_resp = await supabase.table("transcripts").select("*")\
+    transcripts_resp = await supabase.table("transcripts").select("*") \
                             .in_("session_id", session_ids).order("chunk_index").execute()
     transcripts = transcripts_resp.data or []
 
-    # Step 3: Aggregate transcripts per session
+    # Step 4: Aggregate transcripts per session
     aggregated_sessions = []
     session_map = {s["id"]: s for s in sessions_to_return}
     for sid in session_ids:

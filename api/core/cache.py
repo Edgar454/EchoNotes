@@ -96,12 +96,24 @@ async def cache_transcript(
     }
     await redis_client.set(key, json.dumps(value))
     await redis_client.expire(key, 86400)
+    
+    
+async def get_session_keys(redis: Redis, pattern: str) -> List[str]:
+    """Scan and return all keys matching the pattern."""
+    cursor = "0"
+    keys = []
+    while True:
+        cursor, batch = await redis.scan(cursor=cursor, match=pattern)
+        keys.extend(k.decode() if isinstance(k, bytes) else k for k in batch)
+        if cursor == "0":
+            break
+    return keys
 
 
-async def get_cached_transcripts(redis_client:Redis ,session_id: str) -> List[dict]:
+async def get_cached_transcripts(redis_client: Redis, session_id: str) -> List[dict]:
     """Retrieve all cached transcripts for a session."""
     pattern = f"transcript:{session_id}:*"
-    keys = await redis_client.keys(pattern)
+    keys = await get_session_keys(redis_client, pattern)
     transcripts = []
     for key in sorted(keys):
         data = await redis_client.get(key)
