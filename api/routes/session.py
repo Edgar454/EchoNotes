@@ -30,7 +30,7 @@ async def get_transcript(
     supabase: AsyncClient = request.app.state.supabase
 
     # Try Redis cache first
-    cached_transcripts = await get_cached_transcripts(redis_client, user.id, session_id)
+    cached_transcripts = await get_cached_transcript(redis_client, user.id, session_id)
     if cached_transcripts:
         logging.info(f"Cache hit for session {session_id}")
         original_text = cached_transcripts.get("original_text", "")
