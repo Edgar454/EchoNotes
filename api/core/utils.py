@@ -1,15 +1,16 @@
 import os
+import uuid
 import asyncio
 from datetime import datetime
 from supabase import AsyncClient
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 from typing import AsyncGenerator, Tuple
-from fastapi import WebSocket
+from fastapi import WebSocket , HTTPException, status
 from redis.asyncio import Redis
 from api.core.groq_transcription import transcript
 from api.core.translator import translate_text
-from api.core.cache import  end_cached_session
+from api.core.cache import  cache_transcript
 from api.core.storage import  end_session 
 
 class ConnectionManager:
@@ -125,19 +126,83 @@ async def fetch_and_merge_session_audio(supabase: AsyncClient, session_id: str):
         print(f"⚠️ No valid audio chunks merged for session {session_id}")
 
 
-async def finalize_session(supabase:AsyncClient, redis_client:Redis , session_id: str, client_id: int):
+async def finalize_transcript(supabase: AsyncClient, session_id: str) -> Tuple[str, str, str, datetime]:
+    """
+    Merge all transcript chunks for a session into one final entry.
+    Then store the merged transcript in the database and delete the sub-chunks.
+    """
+    # 1️⃣ Fetch all transcript chunks for this session
+    response = await supabase.table("transcripts")\
+        .select("*")\
+        .eq("session_id", session_id)\
+        .order("chunk_index")\
+        .execute()
+
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No transcripts found for session {session_id}"
+        )
+
+    # 2️⃣ Merge all chunks
+    full_original = " ".join([chunk.get("original_text", "") for chunk in response.data]).strip()
+    full_translated = " ".join([chunk.get("translated_text", "") for chunk in response.data]).strip()
+    created_at = response.data[0].get("created_at", datetime.now().isoformat())
+
+    # 3️⃣ Insert final transcript (chunk_index = -1)
+    transcript_id = str(uuid.uuid4())
+    final_transcript = {
+        "transcript_id": transcript_id,
+        "session_id": session_id,
+        "chunk_index": -1,
+        "start_time": created_at,
+        "original_text": full_original,
+        "translated_text": full_translated,
+        "created_at": datetime.now().isoformat()
+    }
+
+    await supabase.table("transcripts").insert(final_transcript).execute()
+
+    # 4️⃣ Delete all sub-chunks (chunk_index >= 0)
+    await supabase.table("transcripts").delete().eq("session_id", session_id).gte("chunk_index", 0).execute()
+    print(f"✅ Session {session_id} transcript finalized successfully.")
+    return full_original, full_translated, transcript_id, created_at
+
+
+async def finalize_session(supabase:AsyncClient, redis_client:Redis , session_id: str , user_id: str)-> dict:
     """
     Triggered automatically when the WebSocket is closed.
     Ends cached session, marks it as complete, and merges audio.
     """
     end_time = datetime.now()
-    await end_cached_session(redis_client, session_id, end_time)
     await end_session(supabase, session_id, end_time)
 
     try:
         await fetch_and_merge_session_audio(supabase, session_id)
-        print(f"✅ Session {session_id}: audio merged successfully.")
+        original, translated, transcript_id, created_at = await finalize_transcript(supabase, session_id)
+        await cache_transcript(
+            redis_client,
+            user_id=user_id,
+            transcript_id=transcript_id,
+            session_id=session_id,
+            start_time=created_at,
+            original_text=original,
+            translated_text=translated
+        )
+        print(f"✅ Session {session_id}: caching transcript succeeded.")
+        return {
+                "session_id": session_id,
+                "status": "completed",
+                "cached": True,
+                "created_at": created_at,
+            }
     except Exception as e:
-        print(f"⚠️ Session {session_id}: audio merge failed: {e}")
+        print(f"⚠️ Session {session_id}: finalization failed: {e}")
+        return {
+                "session_id": session_id,
+                "status": "completed",
+                "cached": False,
+                "created_at": end_time.isoformat(),
+            }
 
     

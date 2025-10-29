@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 import logging
 from api.routes.auth_utils import get_current_user
-from api.core.cache import get_cached_transcripts , get_session_keys
+from api.core.cache import  cache_transcript , get_cached_transcript
 from supabase import AsyncClient
 from redis.asyncio import Redis
 
@@ -30,26 +30,36 @@ async def get_transcript(
     supabase: AsyncClient = request.app.state.supabase
 
     # Try Redis cache first
-    cached_transcripts = await get_cached_transcripts(redis_client, session_id)
+    cached_transcripts = await get_cached_transcripts(redis_client, user.id, session_id)
     if cached_transcripts:
         logging.info(f"Cache hit for session {session_id}")
-        full_original = " ".join([t.get("original_text", "") for t in cached_transcripts])
-        full_translated = " ".join([t.get("translated_text", "") for t in cached_transcripts])
-        created_at = cached_transcripts[0].get("start_time", datetime.utcnow().isoformat())
+        original_text = cached_transcripts.get("original_text", "")
+        translated_text = cached_transcripts.get("translated_text", "")
+        created_at = cached_transcripts.get("start_time", datetime.utcnow().isoformat())
     else:
         logging.info(f"Cache miss for session {session_id}, fetching from Supabase")
-        response = await supabase.table("transcripts").select("*").eq("session_id", session_id).order("chunk_index").execute()
+        response = await supabase.table("transcripts").select("*").eq("session_id", session_id).eq("chunk_index", -1).execute()
         if not response.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No transcripts found for session {session_id}")
-        full_original = " ".join([chunk.get("original_text", "") for chunk in response.data])
-        full_translated = " ".join([chunk.get("translated_text", "") for chunk in response.data])
-        created_at = response.data[0]["created_at"]
+        original_text = response.data[0].get("original_text", "")
+        translated_text = response.data[0].get("translated_text", "")
+        created_at = response.data[0].get("created_at", datetime.utcnow().isoformat())
+        # cache the result in Redis for future requests
+        await cache_transcript(
+            redis_client,
+            user.id,
+            response.data[0].get("id", ""),
+            session_id,
+            created_at,
+            original_text,
+            translated_text
+        )
 
     return {
         "session_id": session_id,
         "user_id": user.id,
-        "original_text": full_original.strip(),
-        "translated_text": full_translated.strip(),
+        "original_text": original_text.strip(),
+        "translated_text": translated_text.strip(),
         "created_at": created_at
     }
 
@@ -65,64 +75,80 @@ async def get_last_transcripts(
 ):
     """
     Return the last N session summaries for the authenticated user.
-    Each transcript is merged into one entry per session.
     """
     supabase: AsyncClient = request.app.state.supabase
-    redis: Redis = request.app.state.redis_client
+    redis = request.app.state.redis_client
 
-    # Step 1: Fetch last N sessions from Redis
-    pattern = f"session:{user.id}:*"
-    session_keys = await get_session_keys(redis, pattern)
+    # --------------------------
+    # Step 1: Get last N session IDs from Redis
+    # --------------------------
+    recent_key = f"user:{user.id}:recent"
+    session_ids = await redis.lrange(recent_key, 0, number_sessions - 1)
+    session_ids = [sid.decode() if isinstance(sid, bytes) else sid for sid in session_ids]
 
+    # Fetch cached transcripts for those sessions
     cached_sessions = []
-    if session_keys:
-        session_keys = sorted(session_keys, reverse=True)[:number_sessions]
-        results = await asyncio.gather(*(redis.get(k) for k in session_keys))
+    if session_ids:
+        results = await asyncio.gather(
+            *(redis.hget(f"user:{user.id}", f"session:{sid}") for sid in session_ids)
+        )
         cached_sessions = [
-            json.loads(d.decode() if isinstance(d, bytes) else d)
-            for d in results
-            if d
+            json.loads(r) for r in results if r
         ]
 
-    # Step 2: Fallback to Supabase if needed
-    if len(cached_sessions) >= number_sessions:
-        sessions_to_return = cached_sessions[:number_sessions]
-    else:
-        cached_ids = {s["id"] for s in cached_sessions}
-        resp = await supabase.table("sessions").select("*").eq("user_id", user.id) \
-                    .order("started_at", desc=True).limit(number_sessions * 2).execute()
+    # --------------------------
+    # Step 2: Fallback to Supabase if not enough
+    # --------------------------
+    if len(cached_sessions) < number_sessions:
+        cached_set = {s["transcript_id"] for s in cached_sessions}
+        resp = await supabase.table("sessions").select("*") \
+                    .eq("user_id", user.id) \
+                    .order("started_at", desc=True) \
+                    .limit(number_sessions * 2).execute()
+        fresh_sessions = [
+            s for s in (resp.data or []) 
+            if s["id"] not in cached_set
+        ]
+        cached_sessions += fresh_sessions[:number_sessions - len(cached_sessions)]
 
-        fresh_sessions = [s for s in (resp.data or []) if s["id"] not in cached_ids]
-        sessions_to_return = cached_sessions + fresh_sessions[:number_sessions - len(cached_sessions)]
-
-    if not sessions_to_return:
+    if not cached_sessions:
         return []
 
-    # Step 3: Fetch transcripts for these sessions
-    session_ids = [s["id"] for s in sessions_to_return]
-    transcripts_resp = await supabase.table("transcripts").select("*") \
-                            .in_("session_id", session_ids).order("chunk_index").execute()
-    transcripts = transcripts_resp.data or []
+    # --------------------------
+    # Step 3: Fetch final transcripts from Supabase if needed
+    # --------------------------
+    session_ids_final = [s["id"] for s in cached_sessions if "transcript_id" not in s]
+    transcripts_resp = []
+    if session_ids_final:
+        transcripts_resp = await supabase.table("transcripts").select("*") \
+                                .in_("session_id", session_ids_final) \
+                                .eq("chunk_index", -1).execute()
+        transcripts = transcripts_resp.data or []
 
-    # Step 4: Aggregate transcripts per session
+        # Update cached_sessions with fetched transcripts
+        for s in cached_sessions:
+            if "transcript_id" not in s:
+                for t in transcripts:
+                    if t["session_id"] == s["id"]:
+                        s.update(t)
+                        break
+
+    # --------------------------
+    # Step 4: Format response
+    # --------------------------
     aggregated_sessions = []
-    session_map = {s["id"]: s for s in sessions_to_return}
-    for sid in session_ids:
-        chunks = [t for t in transcripts if t["session_id"] == sid]
-        original = " ".join([c.get("original_text", "") for c in chunks]).strip()
-        translated = " ".join([c.get("translated_text", "") for c in chunks]).strip()
-        session_data = session_map[sid]
-
+    for s in cached_sessions[:number_sessions]:
         aggregated_sessions.append({
-            "session_id": sid,
-            "started_at": session_data.get("started_at"),
-            "original_text": original,
-            "translated_text": translated,
-            "language_source": session_data.get("language_source"),
-            "language_target": session_data.get("language_target"),
+            "session_id": s.get("session_id", s.get("id")),
+            "started_at": s.get("started_at"),
+            "original_text": s.get("original_text", ""),
+            "translated_text": s.get("translated_text", ""),
+            "language_source": s.get("language_source"),
+            "language_target": s.get("language_target"),
         })
 
     return aggregated_sessions
+
 
 
 # -----------------------

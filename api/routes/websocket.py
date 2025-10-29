@@ -5,13 +5,8 @@ from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect 
 from api.core.utils import transcribe_and_translate
 from api.core.utils import ConnectionManager
-from api.core.utils import fetch_and_merge_session_audio , finalize_session
-from api.core.cache import (
-    cache_session, cache_transcript, end_cached_session
-)
-from api.core.storage import (
-    start_session, start_transcript, end_session 
-)
+from api.core.utils import finalize_session
+from api.core.storage import ( start_session, start_transcript)
 from api.routes.auth_utils import authenticate_websocket
 
 router = APIRouter()
@@ -43,7 +38,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
     supabase = websocket.app.state.supabase
     redis_client = websocket.app.state.redis_client 
 
-    await cache_session(redis_client , session_id, user_id, start_time, source_language, target_language)
+
     await start_session(supabase , session_id, user_id, start_time, source_language, target_language)
 
     chunk_index = 0 
@@ -59,16 +54,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
 
     try:
         async for chunk , transcription, translation in transcribe_and_translate(audio_stream(), source_language, target_language):
-            # Cache result
-            await cache_transcript(
-                redis_client,
-                transcript_id=str(uuid.uuid4()),
-                session_id=session_id,
-                chunk_index=chunk_index,
-                start_time=datetime.now(),
-                original_text=transcription,
-                translated_text=translation
-            )
 
             # Persist asynchronously
             asyncio.create_task(start_transcript(
@@ -86,9 +71,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: int):
             await manager.send_message(websocket, transcription, translation)
             chunk_index += 1
 
-    finally :
+    finally:
         print(f"[Session End] Client {client_id} closed WebSocket — finalizing session {session_id}...")
-        await finalize_session(supabase, redis_client, session_id, client_id)
+        await finalize_session(supabase, redis_client, session_id, user_id)
         manager.disconnect(client_id)
         print(f"[Session End] Session {session_id} finalized successfully.")
 
