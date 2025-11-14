@@ -3,22 +3,22 @@ import 'package:flutter/foundation.dart';
 
 class EnvConfig {
   static String get apiBaseUrl {
-    final url = dotenv.env['API_BASE_URL'] ?? 'http://localhost:8000';
+    final url = dotenv.env['API_BASE_URL'] ?? 'https://chootes-edgar4545777-aqiisd24.leapcell.dev';
     return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
   }
 
   static String get wsBaseUrl {
-    final wsUrl = dotenv.env['WS_BASE_URL'];
-    if (wsUrl != null && wsUrl.isNotEmpty) return wsUrl;
+    final wsUrl = dotenv.env['WS_BASE_URL']?.trim();
+    if (wsUrl?.isNotEmpty ?? false) return wsUrl!;
 
-    final baseUrl = apiBaseUrl;
-    if (baseUrl.startsWith('https://')) {
-      return baseUrl.replaceFirst('https://', 'wss://');
-    } else if (baseUrl.startsWith('http://')) {
-      return baseUrl.replaceFirst('http://', 'ws://');
-    }
-    return 'ws://localhost:8000';
+    final baseUrl = apiBaseUrl.trim();
+    if (baseUrl.startsWith('https://')) return baseUrl.replaceFirst('https://', 'wss://');
+    if (baseUrl.startsWith('http://')) return baseUrl.replaceFirst('http://', 'ws://');
+
+    print('⚠️ Falling back to default ws URL.');
+    return 'wss://chootes-edgar4545777-aqiisd24.leapcell.dev/';
   }
+
 
   static void validate() {
     if (kReleaseMode && dotenv.env['API_BASE_URL'] == null) {

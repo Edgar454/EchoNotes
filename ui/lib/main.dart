@@ -7,6 +7,7 @@ import 'screens/signin_screen.dart';
 import 'screens/signup_screen.dart';
 import 'screens/live_translate_idle_screen.dart';
 import 'screens/live_translate_recording_screen.dart';
+import 'screens/sessions_list_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -58,6 +59,7 @@ class MyApp extends StatelessWidget {
           '/signup': (context) => const SignUpScreen(),
           '/live-idle': (context) => const LiveTranslateIdleScreen(),
           '/live-recording': (context) => const LiveTranslateRecordingScreen(),
+          '/session': (context) => const SessionsListScreen(),
         },
       ),
     );

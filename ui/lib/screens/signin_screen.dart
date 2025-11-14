@@ -84,9 +84,9 @@ class _SignInScreenState extends State<SignInScreen> {
                               final success =
                                   await authProvider.signIn(_email, _password);
                               if (success) {
-                                // Navigate to home screen
+                                // Navigate to live idle screen
                                 Navigator.pushReplacementNamed(
-                                    context, '/home');
+                                    context, '/live-idle');
                               }
                             }
                           },

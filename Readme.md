@@ -1,1 +1,1 @@
-# Echo Note : Live AI translation App
+Echo Note : Live AI translation Apps

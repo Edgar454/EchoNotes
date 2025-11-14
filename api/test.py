@@ -8,7 +8,7 @@ import time
 import json
 
 # === 1. Sign in ===
-signin_url = "http://127.0.0.1:8000/auth/signin"
+signin_url = "https://chootes-edgar4545777-aqiisd24.leapcell.dev/auth/signin"
 signin_payload = {
     "username": "mevaed4@gmail.com",
     "password": "string"
@@ -24,12 +24,12 @@ print("✅ Signed in successfully")
 
 # === 2. Prepare WebSocket connection ===
 session_id = "123"
-ws_uri = f"ws://127.0.0.1:8000/ws/{session_id}"
+ws_uri = f"wss://chootes-edgar4545777-aqiisd24.leapcell.dev/ws/{session_id}"
 headers = {"Authorization": f"Bearer {access_token}"}
 
 # === 3. Load and chunk audio ===
 audio = AudioSegment.from_file("./api/sample.flac", format="flac")
-chunk_duration_ms = 10000  # 5 seconds per chunk
+chunk_duration_ms = 10000  # 2 seconds per chunk
 total_duration = len(audio)
 print(f"🎧 Loaded audio ({total_duration/1000:.2f}s total)")
 
